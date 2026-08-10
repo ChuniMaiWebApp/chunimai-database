@@ -1,0 +1,4 @@
+# file: D:\Code\ArtHub\supabase-local\scripts\generate_keys.py
+# hypothesis_version: 6.151.9
+
+[3650, '-_', '.env', 'ANON_KEY=', 'HS256', 'JWT_SECRET=', 'SERVICE_ROLE_KEY=', '__main__', 'anon', 'exp', 'iss', 'r', 'role', 'service_role', 'supabase-local', 'w']

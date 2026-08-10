@@ -1,0 +1,31 @@
+# Compose secrets
+.env
+.env.prod
+.env.production
+!.env.example
+!.env.prod.example
+
+# TLS material — the Cloudflare Origin key must never reach the repository
+*.pem
+*.key
+
+# Database dumps (scripts/backup-db.sh)
+backups/
+
+# Local development stack state. The folder is `dev-stack/`; under the previous
+# name (`supabase-local/`) these patterns matched nothing, and a first commit
+# would have carried the whole Postgres data directory into git history.
+dev-stack/volumes/
+dev-stack/backups/*
+!dev-stack/backups/.gitkeep
+dev-stack/.venv/
+dev-stack/**/__pycache__/
+
+# Logs
+logs/
+*.log
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/

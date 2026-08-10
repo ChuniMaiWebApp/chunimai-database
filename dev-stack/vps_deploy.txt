@@ -1,0 +1,221 @@
+APPLE MUSIC DOWNLOADER - DEPLOY LEN VPS UBUNTU CLEAN
+=====================================================
+Public qua Tailscale Funnel truoc (khong can domain), config san de sau gan
+domain chi doi 2 dong env. Ban tu day code len server.
+
+Tham khao chi tiet hon: PROD_HOSTING_GUIDE.txt, ORACLE_OCI_DEPLOY_GUIDE.txt
+
+
+!!! QUAN TRONG - CODE DAY LEN PHAI LA BAN DA FIX !!!
+=====================================================
+Neu day ban code cu/sach se gap lai dung cac bug da xu ly. Bao dam co:
+  - backend/Dockerfile                 (base gpac/ubuntu + ffmpeg; Bento4 tag 1.6.0-641)
+  - backend/internal/wrapper/client.go (wrapper port da doi 127.0.0.1 -> 0.0.0.0)
+  - .dockerignore (goc)  va  frontend/.dockerignore
+  - wrapper-prebuilt/  KEM ca rootfs/  (chua session Apple)
+  - supabase-local/    (co init-scripts/01-init.sql)
+  - music.apple.com_cookies.txt
+  - docker-compose.prod.yml , .env.prod.example
+  - (tuy chon) copy luon thu muc wrapper-data/ tu may cu -> khoi login lai.
+
+KHONG can day: node_modules/ , frontend/dist/ , .git
+KHONG commit/day:  .env.prod , wrapper-data/  (chua secret + dang nhap Apple)
+
+Gia su code o  /srv/amdl  tren VPS. Doi path cho khop cho ban.
+
+
+=====================================================================
+PHASE 1 - CAI HE THONG  (chay tren VPS; user co sudo, hoac la root thi bo "sudo")
+=====================================================================
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y ca-certificates curl gnupg git rsync openssl python3 python3-venv
+
+# --- Docker Engine + compose plugin (repo chinh thuc, Ubuntu) ---
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker $USER
+newgrp docker          # hoac: dang xuat roi SSH lai cho an quyen docker
+docker version && docker compose version
+
+# --- CHI NEU VPS LA ARM ---  (kiem tra:  uname -m  -> neu ra aarch64/arm64)
+# Wrapper la binary amd64 nen can gia lap. Neu uname -m ra x86_64 thi BO QUA muc nay.
+#   docker run --privileged --rm tonistiigi/binfmt --install amd64
+#   docker run --rm --platform linux/amd64 debian:bookworm-slim uname -m     # phai in: x86_64
+
+
+=====================================================================
+PHASE 2 - TAO .env.prod
+=====================================================================
+cd /srv/amdl
+cp .env.prod.example .env.prod
+
+# Sinh secret (chay va copy ket qua vao .env.prod o buoc nano ben duoi):
+openssl rand -base64 32        # -> SESSION_SECRET
+openssl rand -base64 24        # -> POSTGRES_PASSWORD (de chi chu+so cho khoi URL-encode)
+
+# Sinh JWT_SECRET + ANON_KEY + SERVICE_ROLE_KEY (3 cai phai khop nhau):
+cd /srv/amdl/supabase-local
+cp .env.example .env
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt
+python scripts/generate_keys.py        # ghi 3 key vao supabase-local/.env
+deactivate
+grep -E '^(JWT_SECRET|ANON_KEY|SERVICE_ROLE_KEY)=' /srv/amdl/supabase-local/.env   # copy 3 dong nay
+cd /srv/amdl
+
+nano .env.prod
+# ---- Dat cac gia tri sau trong .env.prod ----
+#   POSTGRES_PASSWORD=<openssl o tren>
+#   POSTGRES_DSN=postgres://postgres:<POSTGRES_PASSWORD>@postgres:5432/postgres?sslmode=disable
+#   AUTH_DB_PASSWORD=auth-admin-password           <-- GIU NGUYEN (khop init-scripts/01-init.sql)
+#   STORAGE_DB_PASSWORD=storage-admin-password     <-- GIU NGUYEN
+#   REALTIME_DB_PASSWORD=realtime-admin-password   <-- GIU NGUYEN
+#   JWT_SECRET=<tu generate_keys.py>
+#   ANON_KEY=<tu generate_keys.py>
+#   SERVICE_ROLE_KEY=<tu generate_keys.py>
+#   SESSION_SECRET=<openssl o tren>
+#   SECURE_COOKIE=true
+#   REDIS_PORT=6379                                <-- VPS sach: 6379 trong. (Neu ket "address in use" thi doi 6380)
+#   WRAPPER_DATA_HOST=/srv/amdl/wrapper-data
+#   APP_PUBLIC_URL=                                <-- de TRONG, dien o PHASE 5
+#   CORS_ORIGINS=                                  <-- de TRONG, dien o PHASE 5
+
+
+=====================================================================
+PHASE 3 - BUILD IMAGES
+=====================================================================
+cd /srv/amdl
+docker compose --env-file .env.prod -f docker-compose.prod.yml --profile build-tools build wrapper-image
+docker compose --env-file .env.prod -f docker-compose.prod.yml build backend frontend
+
+
+=====================================================================
+PHASE 4 - SEED WRAPPER-DATA + CHAY STACK
+=====================================================================
+mkdir -p /srv/amdl/wrapper-data
+
+# NEU da copy thu muc wrapper-data/ tu may cu sang -> BO QUA lenh seed duoi.
+# NEU chua -> BAT BUOC seed cau truc + session tu image, neu khong login wrapper se fail
+#            voi loi "kvs.sqlitedb not created":
+docker run --rm -v /srv/amdl/wrapper-data:/dest --entrypoint sh ghcr.io/worldobservationlog/wrapper:local -c 'cp -a /app/rootfs/data/. /dest/'
+
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
+docker compose --env-file .env.prod -f docker-compose.prod.yml ps
+curl -fsS http://127.0.0.1:8088/api/healthz        # mong doi: {"db":"ok","status":"ok",...}
+
+
+=====================================================================
+PHASE 5 - PUBLIC QUA TAILSCALE FUNNEL  (khong can mo port inbound)
+=====================================================================
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up                  # mo link in ra de dang nhap (cung tailnet voi ban)
+tailscale status                   # xem hostname dang  <ten-vps>.tailXXXX.ts.net
+sudo tailscale funnel --bg 8088
+sudo tailscale funnel status       # in URL https cong khai
+
+# Dien URL do vao .env.prod roi restart backend (thay URL=... cho dung):
+URL=https://<ten-vps>.tailXXXX.ts.net
+sed -i "s|^APP_PUBLIC_URL=.*|APP_PUBLIC_URL=$URL|; s|^CORS_ORIGINS=.*|CORS_ORIGINS=$URL|" .env.prod
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d backend
+curl -fsS $URL/api/healthz         # mong doi HTTP 200 qua HTTPS cong khai
+
+
+=====================================================================
+PHASE 6 - KHOI TAO APP  (tren trinh duyet, dung URL HTTPS o tren)
+=====================================================================
+#   Mo  $URL/register       -> tao user dau tien (= admin)
+#   Mo  $URL/admin/wrapper  -> neu da copy wrapper-data thi state tu thanh "running";
+#                              neu chua, nhap Apple ID/password de login.
+#   Test: Tim kiem 1 bai -> enqueue -> tai. Loi token thi vao /admin/secrets cap nhat.
+
+
+=====================================================================
+PHASE 7 - CHAY 24/7  (VPS don gian hon may WSL - khong can keepalive)
+=====================================================================
+sudo systemctl enable docker       # docker tu len khi reboot
+# - container da co  restart: unless-stopped  -> reboot la tu chay lai.
+# - tailscaled da duoc installer enable san  -> funnel tu hoi phuc sau reboot.
+# - Backend tu start lai container wrapper khi khoi dong (ensureInitial).
+
+# --- Lenh quan ly hang ngay ---
+cd /srv/amdl
+docker compose --env-file .env.prod -f docker-compose.prod.yml ps
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs -f backend
+docker logs am-wrapper --tail 50
+docker compose --env-file .env.prod -f docker-compose.prod.yml restart backend
+docker compose --env-file .env.prod -f docker-compose.prod.yml down       # tat, GIU data (dung them -v)
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d      # bat lai
+
+# --- Backup nhanh ---
+mkdir -p /srv/amdl/backups
+docker exec am-prod-postgres pg_dump -U postgres -d postgres -Fc > /srv/amdl/backups/pg-$(date +%F-%H%M).dump
+tar -czf /srv/amdl/backups/wrapper-data-$(date +%F-%H%M).tar.gz -C /srv/amdl wrapper-data
+
+
+=====================================================================
+PHASE 8 - SAU NAY GAN DOMAIN  (chi doi 2 dong env + 1 Caddyfile)
+=====================================================================
+# 1) Tro A record:  app.tenban.com -> IP cong khai cua VPS.
+#    Mo port 80 va 443 o firewall/security group cua nha cung cap VPS.
+# 2) Cai Caddy (tu cap HTTPS Let's Encrypt):
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update && sudo apt install -y caddy
+# 3) Sua /etc/caddy/Caddyfile thanh:
+#      app.tenban.com {
+#          reverse_proxy 127.0.0.1:8088
+#      }
+sudo systemctl reload caddy
+# 4) Doi 2 bien env + tat funnel:
+URL=https://app.tenban.com
+sed -i "s|^APP_PUBLIC_URL=.*|APP_PUBLIC_URL=$URL|; s|^CORS_ORIGINS=.*|CORS_ORIGINS=$URL|" /srv/amdl/.env.prod
+cd /srv/amdl && docker compose --env-file .env.prod -f docker-compose.prod.yml up -d backend
+sudo tailscale funnel --https=443 off
+
+
+=====================================================================
+PORT - chi public 80/443 (hoac dung Tailscale Funnel, khong can mo gi)
+=====================================================================
+KHONG public ra ngoai:
+  5432 postgres | 6379 redis | 8095 kong | 3000 studio | 10020/20020/30020 wrapper
+Xem Supabase Studio tu xa: SSH tunnel
+  ssh -L 3000:127.0.0.1:3000 user@VPS_IP      roi mo  http://localhost:3000
+
+
+=====================================================================
+TROUBLESHOOTING - cac loi DA TUNG GAP (va cach xu ly)
+=====================================================================
+* Build backend: "Package 'gpac' has no installation candidate"
+    -> Dockerfile chua fix. Final stage phai FROM gpac/ubuntu (KHONG apt-get gpac).
+
+* Build backend loi tai Bento4 (curl exit code 22 / 404)
+    -> BENTO4_VERSION phai la  1.6.0-641  (dau CHAM), khong phai 1-6-0-641.
+
+* Build backend loi dong "MP4Box -version && mp4decrypt --help"
+    -> dong verify phai la:  RUN MP4Box -version && command -v mp4decrypt
+
+* Frontend build: "tsc: Permission denied" (exit 126)
+    -> thieu frontend/.dockerignore (phai loai node_modules; neu khong node_modules
+       cua host de len de mat quyen +x cua tsc).
+
+* /admin/wrapper: "kvs.sqlitedb not created" hoac "wrapper container missing"
+    -> wrapper-data chua duoc seed. Chay lai lenh seed o PHASE 4.
+
+* wrapper_state cu "unhealthy"/"failed" du container am-wrapper dang chay
+    -> port wrapper bind 127.0.0.1 (chua fix). client.go phai bind 0.0.0.0.
+       Sau khi fix: docker rm -f am-wrapper ; roi  up -d backend  (backend tao lai).
+
+* redis: "failed to bind host port ... 6379 ... address already in use"
+    -> co redis khac dang chiem cong. Doi REDIS_PORT=6380 trong .env.prod roi up -d.
+
+* kong crash-loop "worker_events.sock: Address in use"
+    -> tao lai container moi:
+       docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --force-recreate kong
+
+* supabase-studio "unhealthy"
+    -> vo hai. Frontend khong goi Supabase truc tiep; Studio chi la UI quan tri DB.

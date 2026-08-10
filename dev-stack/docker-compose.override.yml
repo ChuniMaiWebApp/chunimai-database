@@ -1,0 +1,14 @@
+# Added for ChunithmQueueWebApp.
+#
+# This machine already runs a native PostgreSQL (ServBay) bound to 127.0.0.1:5432
+# and [::1]:5432. Those specific bindings win over Docker's wildcard bind, so
+# anything on the host connecting to localhost:5432 reaches ServBay's Postgres
+# rather than Supabase's — which shows up as "password authentication failed".
+#
+# Publishing a second, unclaimed port sidesteps it without touching
+# docker-compose.yml or stopping ServBay. Delete this file if ServBay's
+# PostgreSQL is ever disabled, and point DATABASE_URL back at 5432.
+services:
+  postgres:
+    ports:
+      - "5433:5432"

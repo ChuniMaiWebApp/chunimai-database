@@ -1,0 +1,116 @@
+# =============================================================================
+# Production data services for ChuniMaiWebApp.
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+#
+# Four containers, not the twelve the development stack runs. The API reaches
+# Postgres directly through `pg` and never calls Supabase, so Kong, GoTrue,
+# PostgREST, Realtime and Storage are all absent — roughly a gigabyte of RAM
+# that would have served nothing.
+#
+# What is kept: Postgres (the same supabase/postgres image as development, so
+# the database behaves identically to where the migrations were written),
+# Redis, and the pair that Studio needs — postgres-meta plus Studio itself,
+# published at my-db.novaseele.com.
+#
+# Every port binds to 127.0.0.1 on purpose. Docker publishes to 0.0.0.0 by
+# default, and a wildcard publish writes its own iptables rule that UFW never
+# sees — the database would be open to the internet with the firewall still
+# reporting "deny incoming".
+# =============================================================================
+
+services:
+  postgres:
+    image: supabase/postgres:15.1.0.117
+    container_name: chunimai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 30s
+    networks: [chunimai]
+
+  redis:
+    image: redis:7-alpine
+    container_name: chunimai-redis
+    restart: unless-stopped
+    # Append-only persistence: Redis holds the sign-in throttle counters and
+    # the lock that stops two workers running the daily song refresh at once.
+    # A restart that forgot those would briefly reopen both.
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    ports:
+      - '127.0.0.1:6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [chunimai]
+
+  # The API that Studio's Table Editor and SQL Editor actually talk to.
+  # Not published to the host at all — only Studio needs to reach it.
+  meta:
+    image: supabase/postgres-meta:v0.68.0
+    container_name: chunimai-meta
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: postgres
+      PG_META_DB_PORT: 5432
+      PG_META_DB_NAME: ${POSTGRES_DB:-postgres}
+      PG_META_DB_USER: ${POSTGRES_USER:-postgres}
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    networks: [chunimai]
+
+  studio:
+    image: supabase/studio:20231123-64a766a
+    container_name: chunimai-studio
+    restart: unless-stopped
+    depends_on:
+      - meta
+    environment:
+      # Straight to postgres-meta. The development stack routes this through
+      # Kong; production has no Kong, and Table Editor / SQL Editor — the only
+      # parts of Studio that matter here — speak to pg-meta anyway.
+      STUDIO_PG_META_URL: http://meta:8080
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      DEFAULT_ORGANIZATION_NAME: ${STUDIO_ORG_NAME:-ChuniMai}
+      DEFAULT_PROJECT_NAME: ${STUDIO_PROJECT_NAME:-chunimai}
+      SUPABASE_URL: http://meta:8080
+      SUPABASE_PUBLIC_URL: ${STUDIO_PUBLIC_URL:-https://my-db.novaseele.com}
+      SUPABASE_ANON_KEY: ${ANON_KEY:-}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY:-}
+    ports:
+      # 3010, because 3100 is the Nuxt app and 3333 is the API.
+      - '127.0.0.1:3010:3000'
+    networks: [chunimai]
+
+networks:
+  chunimai:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
