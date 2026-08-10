@@ -40,7 +40,9 @@ services:
       retries: 5
       start_period: 30s
     stop_grace_period: 30s
-    networks: [chunimai]
+    networks:
+      chunimai:
+        aliases: [postgres, chunimai-postgres]
 
   redis:
     image: redis:7-alpine
@@ -64,7 +66,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks: [chunimai]
+    networks:
+      chunimai:
+        aliases: [redis, chunimai-redis]
 
   # The API that Studio's Table Editor and SQL Editor actually talk to.
   # Not published to the host at all — only Studio needs to reach it.
@@ -108,8 +112,12 @@ services:
     networks: [chunimai]
 
 networks:
+  # Shared with chuni-backend and chuni-frontend, which are separate compose
+  # projects. Declared external so all three attach to the *same* network
+  # rather than each creating a project-scoped one of their own:
+  #   docker network create chunimai
   chunimai:
-    driver: bridge
+    external: true
 
 volumes:
   postgres-data:

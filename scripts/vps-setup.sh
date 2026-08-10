@@ -4,9 +4,8 @@
 #
 #   chmod +x scripts/vps-setup.sh && ./scripts/vps-setup.sh
 #
-# Run as a normal user with sudo, not as root: the docker group membership and
-# the PM2 startup unit are both tied to whoever runs this, and root's copies
-# are not the ones the deploy will use.
+# Run as a normal user with sudo, not as root: the docker group membership is
+# tied to whoever runs this, and root's copy is not the one the deploy uses.
 #
 # Idempotent — safe to re-run.
 # =============================================================================
@@ -17,7 +16,7 @@ log() { printf '\n\033[1;36m▸ %s\033[0m\n' "$*"; }
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "Run this as a sudo-capable user, not as root." >&2
-  echo "The PM2 startup unit and docker group are created for the invoking user." >&2
+  echo "The docker group membership is granted to the invoking user." >&2
   exit 1
 fi
 
@@ -51,20 +50,12 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-log "[3/8] Node.js 22 and PM2"
+log "[3/8] Node.js 22 (for the repo tooling; the apps run in containers)"
 if ! command -v node >/dev/null || [ "$(node -v | cut -c2-3)" -lt 22 ]; then
   curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
   sudo apt-get install -y nodejs
 fi
 node -v
-
-sudo npm install -g pm2@latest
-# Without rotation, PM2's logs grow until the disk fills — which presents as
-# Postgres refusing writes, several weeks after anyone touched the server.
-pm2 install pm2-logrotate || true
-pm2 set pm2-logrotate:max_size 10M || true
-pm2 set pm2-logrotate:retain 14 || true
-pm2 set pm2-logrotate:compress true || true
 
 # -----------------------------------------------------------------------------
 log "[4/8] Docker Engine and Compose plugin"
@@ -79,6 +70,10 @@ if ! command -v docker >/dev/null; then
 fi
 sudo usermod -aG docker "$USER" || true
 sudo systemctl enable --now docker
+
+# One shared bridge for all three compose projects. Declared `external` in each
+# compose file, so it has to exist before any of them come up.
+sudo docker network inspect chunimai >/dev/null 2>&1 || sudo docker network create chunimai
 
 # -----------------------------------------------------------------------------
 log "[5/8] Firewall"
@@ -109,15 +104,14 @@ sudo mkdir -p /etc/nginx/snippets
 # and skipping Cloudflare Access.
 sudo curl -fsSL -o /etc/ssl/cloudflare/origin-pull-ca.pem   https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem   || echo "  (could not fetch the origin-pull CA — fetch it before enabling my-db)"
 
-# PM2 writes here; each app repo keeps its own.
-mkdir -p /home/repo/ChuniMaiWebApp/chuni-backend/logs  2>/dev/null || true
-mkdir -p /home/repo/ChuniMaiWebApp/chuni-frontend/logs 2>/dev/null || true
+# Container logs are capped in each compose file (json-file, 10m x 5), so
+# nothing here grows without bound.
 
 # -----------------------------------------------------------------------------
-log "[8/8] PM2 boot service"
-# Prints and runs the systemd unit that restarts the apps after a reboot.
-# `pm2 save` still has to happen after the first successful start.
-sudo env PATH="$PATH:/usr/bin" pm2 startup systemd -u "$USER" --hp "$HOME"
+log "[8/8] Docker on boot"
+# Containers carry `restart: unless-stopped`, so the whole stack comes back on
+# reboot as long as the daemon itself does.
+sudo systemctl enable docker
 
 cat <<'EOF'
 
@@ -154,10 +148,12 @@ Next, in order — all paths relative to /home/repo/ChuniMaiWebApp:
 
   5. Data services, then the two apps:
        cd chunimai-database && ./scripts/deploy.sh && cd ..
-       cd chuni-backend  && ./scripts/deploy.sh --first-run && cd ..
-       cd chuni-frontend && ./scripts/deploy.sh --first-run && cd ..
+       cd chuni-backend  && ./scripts/deploy.sh && cd ..
+       cd chuni-frontend && ./scripts/deploy.sh && cd ..
 
   6. First song catalogue load (about 7,800 charts):
-       cd chuni-backend && npm run seed:refresh && npm run seed:regions
+       cd chuni-backend
+       docker compose run --rm migrate npm run seed:refresh
+       docker compose run --rm migrate npm run seed:regions
 ──────────────────────────────────────────────────────────────────────
 EOF
