@@ -2,7 +2,9 @@ name: CI/CD — chunimai-database
 
 on:
   push:
-    branches: [main]
+    # Both, because the repos were first pushed to `master`. Renaming later
+    # needs no change here.
+    branches: [main, master]
   workflow_dispatch:
 
 concurrency:
@@ -68,8 +70,9 @@ jobs:
           script: |
             set -e
             cd /home/repo/ChuniMaiWebApp/chunimai-database
+            export DEPLOY_BRANCH="${{ github.ref_name }}"
             git fetch --prune origin
-            git checkout origin/main -- scripts/deploy.sh
+            git checkout "origin/${{ github.ref_name }}" -- scripts/deploy.sh
             chmod +x scripts/deploy.sh
             ./scripts/deploy.sh
 

@@ -28,8 +28,9 @@ fail() { printf '\n\033[1;31m✖ %s\033[0m\n' "$*" >&2; }
 log "===== DATA DEPLOY $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
 
 log "Fetching latest"
+BRANCH="${DEPLOY_BRANCH:-$(git symbolic-ref --short HEAD)}"
 git fetch --prune origin
-git reset --hard origin/main
+git reset --hard "origin/$BRANCH"
 
 log "Reconciling containers"
 "${COMPOSE[@]}" up -d --remove-orphans
