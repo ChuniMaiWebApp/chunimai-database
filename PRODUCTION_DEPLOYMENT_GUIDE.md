@@ -1,11 +1,14 @@
 # Triển khai production — ChuniMaiWebApp
 
-VPS `163.61.72.134` · Cloudflare (`novaseele.com`) · nginx · PM2 · GitHub Actions · Telegram
+VPS `163.61.72.134` · Cloudflare (`novaseele.com`) · nginx · Docker · GitHub Actions · Telegram
+
+> **Đã triển khai và đang chạy.** Tài liệu này vừa là nhật ký những gì đã làm,
+> vừa là hướng dẫn để dựng lại từ đầu. Trạng thái hiện tại ở [mục 9](#9-trạng-thái-hiện-tại).
 
 ```
                     Internet
                        │
-                  Cloudflare  (proxied, Full Strict)
+                  Cloudflare  (proxied, Full)
           ┌────────────┼────────────┐
           ▼            ▼            ▼
    chunithm-app   chunithm-api    my-db
@@ -15,6 +18,7 @@ VPS `163.61.72.134` · Cloudflare (`novaseele.com`) · nginx · PM2 · GitHub Ac
           │            │            │
           ▼            ▼            ▼
    Nuxt :3100     Nest :3333    Studio :3010
+   (container)    (container)   (container)
           │            │            │
           └───SSR──────┤            ▼
                        ▼      postgres-meta
@@ -27,45 +31,43 @@ VPS `163.61.72.134` · Cloudflare (`novaseele.com`) · nginx · PM2 · GitHub Ac
 └── chunimai-database/   → github.com/ChuniMaiWebApp/chunimai-database   (repo này)
 ```
 
+Cả sáu tiến trình chạy trong Docker, mỗi repo một `docker-compose.yml`, dùng
+chung một bridge tên `chunimai`. nginx là thứ duy nhất chạy thẳng trên host —
+nó cần cổng 80/443 và các chứng chỉ trong `/etc/ssl`.
+
 Ba repo, ba workflow, ba lần deploy độc lập. Sửa UI không đụng tới API; đổi
 compose không build lại gì cả. Khi thêm maimai về sau, thêm `maimai-backend`
 và `maimai-frontend` cạnh đây, dùng chung Postgres/Redis/Studio của repo này.
 
 ---
 
-## ⚠️ 0. Làm trước tiên — mật khẩu root đã lộ
+## ⚠️ 0. Bảo mật SSH — phần bạn còn phải làm
 
-Mật khẩu root đã được dán vào một khung chat. Kể cả không ai đọc trộm, VPS đang
-mở port 22 với đăng nhập bằng mật khẩu — bot dò quét IP mới liên tục.
+**Đã làm:** user `deploy` (không có mật khẩu, chỉ vào được bằng key), sudo
+không cần mật khẩu, `/home/repo/ChuniMaiWebApp` thuộc về nó, fail2ban đang
+chạy. Key ở `C:\Users\NovaSeele\.ssh\chunimai_deploy` — **hãy backup nó.**
+
+Một chi tiết đáng nhớ nếu dựng lại: `adduser --disabled-password` trên Ubuntu
+24.04 ghi `!` vào `/etc/shadow`, và sshd coi đó là *account locked* nên chặn cả
+đăng nhập bằng key. Phải `usermod -p '*' deploy` — `*` nghĩa là "không mật khẩu
+nào khớp được", khác với "khoá tài khoản".
+
+**Chưa làm, cần bạn quyết định** — làm sai là tự khoá mình ra ngoài, nên tôi
+không tự ý làm:
 
 ```bash
 ssh root@163.61.72.134
 passwd
 ```
 
-Rồi bỏ hẳn đăng nhập bằng mật khẩu. Trên **máy của bạn**:
+Rồi tắt hẳn đăng nhập bằng mật khẩu. **Mở một cửa sổ SSH thứ hai và xác nhận
+vào được bằng key trước đã:**
 
 ```bash
-ssh-keygen -t ed25519 -C "chunimai-deploy" -f ~/.ssh/chunimai_deploy
+ssh -i ~/.ssh/chunimai_deploy deploy@163.61.72.134
 ```
 
-Trên **VPS** (vẫn đang là root):
-
-```bash
-adduser --gecos "" deploy
-usermod -aG sudo deploy
-mkdir -p /home/deploy/.ssh && chmod 700 /home/deploy/.ssh
-nano /home/deploy/.ssh/authorized_keys      # dán nội dung ~/.ssh/chunimai_deploy.pub
-chmod 600 /home/deploy/.ssh/authorized_keys
-chown -R deploy:deploy /home/deploy/.ssh
-
-mkdir -p /home/repo/ChuniMaiWebApp
-chown -R deploy:deploy /home/repo
-```
-
-**Mở một cửa sổ SSH thứ hai** bằng `ssh -i ~/.ssh/chunimai_deploy deploy@163.61.72.134`
-và xác nhận vào được, **trước khi** chạy bước dưới — nếu không bạn sẽ tự khoá
-mình ra ngoài:
+Vào được rồi mới chạy:
 
 ```bash
 sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/'          /etc/ssh/sshd_config
@@ -78,48 +80,38 @@ Secrets là `deploy` chứ không phải `root`.
 
 ---
 
-## 1. Đưa code lên GitHub
+## 1. GitHub — đã xong
 
-Ba thư mục local đã là ba git repo riêng, đang ở nhánh `master`, chưa có
-remote. GitHub mặc định `main` nên đổi tên nhánh cho khớp — các workflow chỉ
-lắng nghe `main`.
-
-Chạy trên máy bạn, tại `D:\Work\ChuniMaiWebApp`:
+Ba repo đã có đủ code, đang ở nhánh `master`. Workflow lắng nghe cả `main` lẫn
+`master` nên không bắt buộc đổi tên. Muốn đổi cho chuẩn:
 
 ```bash
-cd chuni-backend
-git branch -M main
-git remote add origin https://github.com/ChuniMaiWebApp/chuni-backend.git
-git add -A
-git status          # ĐỌC KỸ: không được thấy .env, *.pem, *.key
-git commit -m "Production deployment: trust proxy, cookie domain, optional Supabase, CI"
-git push -u origin main
+git branch -M main && git push -u origin main
+# rồi đổi default branch trong Settings của repo, xoá nhánh master cũ
 ```
+
+Quy trình hằng ngày từ giờ, trong repo tương ứng:
 
 ```bash
-cd ../chuni-frontend
-git branch -M main
-git remote add origin https://github.com/ChuniMaiWebApp/chuni-frontend.git
-git add -A
-git status
-git commit -m "Production deployment: split API base for SSR, stable fetch keys, lamp fixes"
-git push -u origin main
+git add . && git commit -m "..." && git push
 ```
 
-`chunimai-database` chưa phải repo — khởi tạo mới:
+Actions sẽ lint → test → build → SSH vào VPS chạy `scripts/deploy.sh` → health
+check → nhắn Telegram.
 
-```bash
-cd ../chunimai-database
-git init -b main
-git add -A
-git status          # KHÔNG được thấy .env.prod, dev-stack/volumes/, *.pem, *.key
-git commit -m "Infrastructure: compose, nginx, VPS scripts, deployment guide"
-git remote add origin https://github.com/ChuniMaiWebApp/chunimai-database.git
-git push -u origin main
-```
+Hai điều đã cắn một lần, đừng để cắn lại:
 
-Cả ba nên để **private**. Không repo nào chứa secret, nhưng `chuni-backend` có
-toàn bộ logic đăng nhập CHUNITHM-NET.
+- **Line ending.** `.gitattributes` ghim LF cho `*.sh`, `*.conf`, `*.yml`,
+  `.env*`. Không có nó, Windows commit CRLF và Linux trả lời
+  `bad interpreter: /usr/bin/env bash^M`; tệ hơn, `POSTGRES_PASSWORD=abc\r`
+  khiến `\r` thành một phần mật khẩu và không khớp `DATABASE_URL`.
+- **Bit thực thi.** `scripts/*.sh` được commit ở mode `100755`. Trước đó là
+  `100644`, mà `deploy.sh` lại tự `git reset --hard` — nên mỗi lần deploy nó
+  tự xoá quyền chạy của chính mình.
+
+`chuni-backend` và `chuni-frontend` đang **public**. Không repo nào chứa secret
+(`.env` bị gitignore, đã kiểm chứng bằng `git check-ignore`), nhưng
+`chuni-backend` có toàn bộ logic đăng nhập CHUNITHM-NET — cân nhắc để private.
 
 ---
 
@@ -205,32 +197,47 @@ chmod +x scripts/*.sh
 ./scripts/vps-setup.sh
 ```
 
-Script cài Node 22, PM2 (kèm logrotate), Docker, nginx, UFW, fail2ban, tạo swap
-2 GB, tải CA origin-pull của Cloudflare, và đăng ký PM2 vào systemd. Chạy lại
-nhiều lần không sao.
+Script cài Node 22, Docker (+ tạo bridge `chunimai`), nginx, UFW, fail2ban, tạo
+swap 2 GB và tải CA origin-pull của Cloudflare. Chạy lại nhiều lần không sao.
 
 Xong thì **đăng xuất và SSH lại** để có quyền docker.
 
 ### Chứng chỉ và nginx
 
-```bash
-sudo nano /etc/ssl/cloudflare/origin.pem     # dán origin.pem
-sudo nano /etc/ssl/cloudflare/origin.key     # dán origin.key
-sudo chmod 600 /etc/ssl/cloudflare/origin.key
+Hiện tại đang dùng **self-signed cert** do tôi sinh trên VPS, hợp lệ 10 năm,
+phủ `novaseele.com` và `*.novaseele.com`. Nó đủ để chạy với Cloudflare ở chế độ
+**Full** (mã hoá chặng Cloudflare ↔ VPS nhưng không xác thực chứng chỉ). Muốn
+lên **Full (Strict)** thì thay bằng Origin Certificate của Cloudflare:
 
+```bash
+sudo nano /etc/ssl/cloudflare/origin.pem     # dán Origin Certificate
+sudo nano /etc/ssl/cloudflare/origin.key     # dán Private Key
+sudo chmod 600 /etc/ssl/cloudflare/origin.key
+sudo nginx -t && sudo systemctl reload nginx
+# rồi Cloudflare → SSL/TLS → Overview → Full (Strict)
+```
+
+nginx đã cài sẵn; lệnh dựng lại từ đầu:
+
+```bash
 cd /home/repo/ChuniMaiWebApp/chunimai-database
 sudo cp nginx/http-globals.conf      /etc/nginx/conf.d/chunimai-globals.conf
 sudo cp nginx/cloudflare-realip.conf /etc/nginx/conf.d/
+sudo mkdir -p /etc/nginx/snippets
 sudo cp nginx/snippets-proxy.conf    /etc/nginx/snippets/chunimai-proxy.conf
 sudo cp nginx/chunithm-api.conf /etc/nginx/sites-available/chunithm-api
 sudo cp nginx/chunithm-app.conf /etc/nginx/sites-available/chunithm-app
 sudo cp nginx/my-db.conf        /etc/nginx/sites-available/my-db
 sudo ln -sf /etc/nginx/sites-available/chunithm-api /etc/nginx/sites-enabled/
 sudo ln -sf /etc/nginx/sites-available/chunithm-app /etc/nginx/sites-enabled/
-sudo ln -sf /etc/nginx/sites-available/my-db        /etc/nginx/sites-enabled/
+# my-db KHÔNG bật cho tới khi Cloudflare Access xong — xem mục 2.
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t && sudo systemctl reload nginx
 ```
+
+> Ubuntu 24.04 chạy nginx 1.24. Chỉ thị `http2 on;` đứng riêng là cú pháp của
+> 1.25.1 trở lên và sẽ làm `nginx -t` fail với `unknown directive "http2"` —
+> các file config ở đây dùng dạng `listen 443 ssl http2;`, chạy được cả hai.
 
 `cloudflare-realip.conf` **bắt buộc**, không phải tuỳ chọn. Thiếu nó thì mọi
 request mang IP của Cloudflare edge, và bộ giới hạn đăng nhập tính theo IP sẽ
@@ -239,56 +246,74 @@ người thứ 11 bị khoá 15 phút.
 
 ### Điền secret
 
+Đã sinh và điền sẵn trên VPS — mật khẩu Postgres, `ENCRYPTION_KEY` và
+`JWT_SECRET` được sinh bằng `openssl` **ngay trên máy đó**, ghi thẳng vào file,
+không đi qua bất kỳ đâu khác. Cả hai file ở chế độ `600`.
+
+Nếu dựng lại từ đầu:
+
 ```bash
 cd /home/repo/ChuniMaiWebApp
+umask 077
 
-cp chunimai-database/.env.prod.example chunimai-database/.env.prod
-nano chunimai-database/.env.prod
-#   POSTGRES_PASSWORD=<openssl rand -hex 24>
-#   Dùng hex chứ đừng base64: ký tự / và + phải percent-encode trong DATABASE_URL.
+PG_PASS=$(openssl rand -hex 24)     # hex, không phải base64: ký tự / và +
+                                    # phải percent-encode trong DATABASE_URL
+sed -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${PG_PASS}|" \
+    chunimai-database/.env.prod.example > chunimai-database/.env.prod
 
-cp chuni-backend/.env.production.example chuni-backend/.env
-nano chuni-backend/.env
-#   DATABASE_URL=postgresql://postgres:<đúng mật khẩu trên>@127.0.0.1:5432/postgres
-#   ENCRYPTION_KEY=<openssl rand -base64 32>
-#   JWT_SECRET=<openssl rand -base64 32>
-#   CORS_ORIGIN và COOKIE_DOMAIN đã điền sẵn đúng domain, kiểm tra lại là được.
+sed -e "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://postgres:${PG_PASS}@postgres:5432/postgres|" \
+    -e "s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=$(openssl rand -base64 32)|" \
+    -e "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -base64 32)|" \
+    chuni-backend/.env.production.example > chuni-backend/.env
+
+unset PG_PASS
+chmod 600 chunimai-database/.env.prod chuni-backend/.env
 ```
 
+Host trong `DATABASE_URL` là `postgres`, **không phải** `127.0.0.1`: API chạy
+trong container, và loopback ở đó là loopback của chính container. `postgres`
+và `redis` là alias trên bridge `chunimai`.
+
 `chuni-frontend` **không cần** `.env` — hai URL API nằm trong
-`ecosystem.config.js` của nó.
+`docker-compose.yml` của nó.
 
 > ⚠️ `ENCRYPTION_KEY` giải mã cookie jar CHUNITHM-NET của **mọi** người chơi.
 > Mất nó thì tất cả phải liên kết lại tài khoản; lộ nó thì người khác thao tác
 > được trên CHUNITHM-NET dưới danh nghĩa họ, kể cả đổi tên tài khoản. Backup
-> riêng, đừng để chung chỗ với dump database.
+> riêng, đừng để chung chỗ với dump database:
+>
+> ```bash
+> grep -E '^(ENCRYPTION_KEY|JWT_SECRET)=' chuni-backend/.env
+> ```
 
 ### Chạy lần đầu, đúng thứ tự này
 
 ```bash
+docker network create chunimai       # vps-setup.sh đã làm; idempotent
+
 cd /home/repo/ChuniMaiWebApp/chunimai-database && ./scripts/deploy.sh
-cd ../chuni-backend  && chmod +x scripts/deploy.sh && ./scripts/deploy.sh --first-run
-cd ../chuni-frontend && chmod +x scripts/deploy.sh && ./scripts/deploy.sh --first-run
+cd ../chuni-backend  && ./scripts/deploy.sh
+cd ../chuni-frontend && ./scripts/deploy.sh
 ```
 
 Database trước, vì API chạy migration lúc deploy và sẽ dừng lại nếu Postgres
 chưa lên. Frontend sau cùng, vì trang render sẵn ở server cần API trả lời.
 
-Nạp danh mục bài hát lần đầu (khoảng 7 800 chart):
+Danh mục bài hát **tự nạp** — scheduler trong API thấy database trống và chạy
+catch-up ngay khi khởi động (2265 bài, 8234 chart, kèm cờ vùng intl/jp). Muốn
+ép chạy lại:
 
 ```bash
-cd /home/repo/ChuniMaiWebApp/chuni-backend
-npm run seed:refresh
-npm run seed:regions
+cd chuni-backend
+docker compose run --rm migrate npm run seed:refresh -- --force
+docker compose run --rm migrate npm run seed:regions
 ```
 
 Sau đó cron trong app tự làm mới lúc 08:00 UTC hằng ngày.
 
 ### Backup
 
-```bash
-crontab -e
-```
+Đã cài sẵn trong crontab của user `deploy`. Xem bằng `crontab -l`:
 
 ```cron
 15 19 * * * /home/repo/ChuniMaiWebApp/chunimai-database/scripts/backup-db.sh >> /home/repo/ChuniMaiWebApp/chunimai-database/logs/backup.log 2>&1
@@ -343,18 +368,24 @@ khi hỏng ngay từ khâu CI.
 
 | Việc | Lệnh |
 |---|---|
-| Log | `pm2 logs chuni-backend --lines 100` |
-| Trạng thái | `pm2 status` |
+| Log API | `cd chuni-backend && docker compose logs -f api` |
+| Log web | `cd chuni-frontend && docker compose logs -f web` |
+| Trạng thái mọi thứ | `docker ps` |
 | Health | `curl -s localhost:3333/api/v1/health \| jq` |
-| Data services | `cd chunimai-database && docker compose -f docker-compose.prod.yml --env-file .env.prod ps` |
+| Khởi động lại một app | `cd chuni-backend && docker compose restart api` |
+| Dừng / bật lại | `docker compose down` / `docker compose up -d` |
 | Deploy tay | `cd <repo> && ./scripts/deploy.sh` |
+| Chạy migration | `cd chuni-backend && docker compose run --rm migrate` |
+| Vào DB bằng psql | `cd chunimai-database && docker compose -f docker-compose.prod.yml --env-file .env.prod exec postgres psql -U postgres` |
 | Backup tay | `chunimai-database/scripts/backup-db.sh` |
-| Quay về commit cũ | `git reset --hard <sha> && ./scripts/deploy.sh` |
-| Vào DB bằng CLI | `docker compose -f docker-compose.prod.yml --env-file .env.prod exec postgres psql -U postgres` |
+| Dọn image cũ | `docker image prune -f` |
+| Xem dung lượng Docker | `docker system df` |
 
-Deploy tự rollback: nếu health check không xanh trong 60 giây, script trả commit
-cũ về, build lại và reload. Migration **không** bị hoàn tác — chúng chỉ thêm,
-nên bản build cũ vẫn chạy được với schema mới.
+
+Deploy tự rollback: script gắn tag `:rollback` cho image đang chạy **trước khi**
+build cái mới, nên nếu health check không xanh trong 60 giây nó quay về image cũ
+ngay, không phải biên dịch lại từ nguồn. Migration **không** bị hoàn tác —
+chúng chỉ thêm, nên image cũ vẫn chạy được với schema mới.
 
 ---
 
@@ -397,3 +428,61 @@ Rồi trỏ vào `localhost:5433`.
   nhanh được.
 - **Uptime monitoring.** `/api/v1/health` trả `ok`/`degraded` kèm trạng thái
   từng dependency — cắm thẳng vào UptimeRobot là xong.
+
+---
+
+## 9. Trạng thái hiện tại
+
+Triển khai lúc 2026-08-11, đã kiểm chứng từ ngoài internet.
+
+### Đang chạy
+
+| Container | Cổng (chỉ 127.0.0.1) | Vai trò |
+|---|---|---|
+| `chuni-frontend` | 3100 | Nuxt/Nitro |
+| `chuni-backend` | 3333 | NestJS |
+| `chunimai-postgres` | 5432 | supabase/postgres 15.1 |
+| `chunimai-redis` | 6379 | Redis 7 |
+| `chunimai-meta` | — | postgres-meta cho Studio |
+| `chunimai-studio` | 3010 | Supabase Studio (**chưa mở ra ngoài**) |
+
+Cả sáu `healthy`. Dữ liệu: 2265 bài, 8234 chart (6357 quốc tế / 6860 Nhật),
+11 migration. Backup đầu tiên 322 KiB.
+
+### Đã kiểm chứng
+
+- `https://chunithm-app.novaseele.com` → 200, SSR có nội dung thật; tìm kiếm
+  và filter chạy qua Cloudflare.
+- `https://chunithm-api.novaseele.com/api/v1/health` → `{"status":"ok",
+  "dependencies":{"postgres":"up","redis":"up"}}`.
+- **IP thật**: nginx ghi log `116.96.45.105` — đúng IP người gọi, không phải
+  Cloudflare edge. Đây là điều kiện để bộ giới hạn đăng nhập có ý nghĩa.
+- **Rate limit**: 11 lần gọi `/auth/login` → `401 ×5` rồi `429 ×6`. Chặn ở lần
+  thứ 6 vì hạn mức theo *tài khoản* là 5; hạn mức theo IP là 10.
+- **CORS**: `access-control-allow-origin: https://chunithm-app.novaseele.com`
+  kèm `allow-credentials: true`.
+- `/api/docs` → 404.
+- Cổng 5432, 6379, 3010, 3333, 3100 đều đóng từ internet.
+- Dữ liệu sống sót qua một lần recreate container (named volume).
+
+### Chưa làm
+
+1. **Đổi mật khẩu root và tắt `PasswordAuthentication`** — mục 0.
+2. **Origin Certificate + Full (Strict)** — đang chạy self-signed + Full. Chặng
+   Cloudflare ↔ VPS đã mã hoá nhưng chưa được xác thực.
+3. **`my-db` chưa bật.** Studio đang chạy nhưng nginx vhost chưa symlink. Bật
+   sau khi xong Cloudflare Access (mục 2), rồi:
+   ```bash
+   sudo ln -sf /etc/nginx/sites-available/my-db /etc/nginx/sites-enabled/
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+   Cần cả **Authenticated Origin Pulls** bật ở Cloudflare, vì `my-db.conf` có
+   `ssl_verify_client on` — không bật thì mọi request bị từ chối ở bắt tay TLS.
+4. **GitHub Secrets + Telegram** — chưa điền, nên push chưa tự deploy. Sáu
+   secret ở mục 3.
+5. **Cookie phiên chưa kiểm chứng thực tế.** `COOKIE_DOMAIN=.novaseele.com` đã
+   nạp đúng vào container, nhưng `Set-Cookie` chỉ xuất hiện khi đăng nhập
+   thành công — cần tài khoản SEGA thật. Đăng nhập lần đầu, mở DevTools →
+   Application → Cookies và xác nhận `session` có `Domain=.novaseele.com`,
+   `Secure`, `HttpOnly`, `SameSite=Lax`. Nếu thiếu `Domain`, SSR sẽ luôn render
+   trạng thái chưa đăng nhập.
