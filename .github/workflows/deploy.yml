@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # No application code here, so "CI" means: would this break the VPS?
       - name: Shell scripts parse
