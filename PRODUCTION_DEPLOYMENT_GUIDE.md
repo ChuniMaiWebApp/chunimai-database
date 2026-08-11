@@ -335,7 +335,7 @@ curl -s -o /dev/null -w "%{http_code}\n" https://chunithm-app.novaseele.com
 curl -s -o /dev/null -w "%{http_code}\n" https://my-db.novaseele.com     # 302 → Cloudflare Access
 
 # 2. SSR thật sự chạy — HTML đầu tiên phải có nội dung
-curl -s https://chunithm-app.novaseele.com/ | grep -c "ChunithmQueue"
+curl -s https://chunithm-app.novaseele.com/ | grep -c "ChunithmWebApp"
 
 # 3. Cookie phiên: Domain=.novaseele.com, Secure, HttpOnly, SameSite=Lax
 curl -sI -X POST https://chunithm-api.novaseele.com/api/v1/auth/login \

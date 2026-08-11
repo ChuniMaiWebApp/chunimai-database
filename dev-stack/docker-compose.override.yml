@@ -1,4 +1,4 @@
-# Added for ChunithmQueueWebApp.
+# Added for ChunithmWebAppWebApp.
 #
 # This machine already runs a native PostgreSQL (ServBay) bound to 127.0.0.1:5432
 # and [::1]:5432. Those specific bindings win over Docker's wildcard bind, so
