@@ -12,7 +12,10 @@ Repo này **không chứa code ứng dụng** và không chứa migration.
 | `dev-stack/` | Supabase đầy đủ cho máy local — **không** dùng ở production |
 | `dev-redis/` | Redis cho máy local (Windows/WSL) |
 
-Bắt đầu từ [PRODUCTION_DEPLOYMENT_GUIDE.md](PRODUCTION_DEPLOYMENT_GUIDE.md).
+**Đọc trước:** [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) — mỗi thứ trên server
+là gì, để làm gì, đụng vào khi nào. Không có code.
+
+Cần lệnh cụ thể thì sang [PRODUCTION_DEPLOYMENT_GUIDE.md](PRODUCTION_DEPLOYMENT_GUIDE.md).
 
 ## Vì sao migration không nằm ở đây
 
