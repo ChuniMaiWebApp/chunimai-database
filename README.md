@@ -1,53 +1,46 @@
-# chunimai-database
+# ChunithmWebApp — Database & Infrastructure
 
-Hạ tầng dữ liệu và cấu hình máy chủ cho [ChuniMaiWebApp](https://github.com/ChuniMaiWebApp).
-Repo này **không chứa code ứng dụng** và không chứa migration.
+Database schemas, Docker containers, and infrastructure configurations for ChunithmWebApp.
 
-| Thư mục | Nội dung |
-|---|---|
-| `docker-compose.prod.yml` | Postgres, Redis, postgres-meta, Studio — bốn container chạy thật |
-| `postgres/init/` | Script khởi tạo database, chạy một lần trên volume rỗng |
-| `nginx/` | Ba vhost (`chunithm-app`, `chunithm-api`, `my-db`) và phần dùng chung |
-| `scripts/` | Cài VPS, deploy, backup, cập nhật dải IP Cloudflare |
-| `dev-stack/` | Supabase đầy đủ cho máy local — **không** dùng ở production |
-| `dev-redis/` | Redis cho máy local (Windows/WSL) |
+## Quickstart (Localhost)
 
-**Đọc trước:** [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) — mỗi thứ trên server
-là gì, để làm gì, đụng vào khi nào. Không có code.
+### 1. Prerequisites
+- Docker & Docker Compose
 
-Cần lệnh cụ thể thì sang [PRODUCTION_DEPLOYMENT_GUIDE.md](PRODUCTION_DEPLOYMENT_GUIDE.md).
-
-## Vì sao migration không nằm ở đây
-
-Migration ở `chuni-backend/migrations/`, cạnh code đọc chúng. Tách ra thì mỗi
-lần deploy thành hai lần push phải đúng thứ tự — sai thứ tự là schema lệch
-code, và không có gì bắt được lỗi đó trước khi người chơi gặp.
-
-## Vì sao production không chạy Supabase đầy đủ
-
-Backend nói chuyện thẳng với Postgres qua `pg`. Thứ duy nhất từng gọi Supabase
-là một dòng trạng thái trong `/health`. Kong, GoTrue, PostgREST, Realtime và
-Storage đều không có mặt — khoảng 1 GB RAM cho những dịch vụ không ai gọi.
-
-Studio thì vẫn giữ, vì bạn cần xem database qua trình duyệt. Nó chạy trực tiếp
-với `postgres-meta`: Table Editor và SQL Editor hoạt động bình thường, các tab
-Authentication/Storage/API Docs thì trống. Chi tiết ở mục 7 của guide.
-
-## Lệnh hay dùng
+### 2. Run Local Postgres & Redis
 
 ```bash
-# Trên VPS
-docker compose -f docker-compose.prod.yml --env-file .env.prod ps
-docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f postgres
-docker compose -f docker-compose.prod.yml --env-file .env.prod exec postgres psql -U postgres
+# Clone repository
+git clone https://github.com/ChuniMaiWebApp/chunimai-database.git
+cd chunimai-database
 
-./scripts/deploy.sh        # đồng bộ container, báo nếu nginx config đã đổi
-./scripts/backup-db.sh     # dump ra backups/, giữ 14 ngày
+# Start local Postgres & Redis containers
+docker compose -f dev-stack/docker-compose.yml up -d
 ```
 
-```powershell
-# Trên máy local (từ D:\Work\ChuniMaiWebApp)
-npm run infra:up
-npm run infra:status
-npm run redis:start
+Connection endpoints:
+- PostgreSQL: `localhost:5432` (`postgres` / `postgres`)
+- Redis: `localhost:6379`
+
+### Docker Commands
+
+```bash
+# Check running containers
+docker compose -f dev-stack/docker-compose.yml ps
+
+# View container logs
+docker compose -f dev-stack/docker-compose.yml logs -f
+
+# Stop local services
+docker compose -f dev-stack/docker-compose.yml down
 ```
+
+---
+
+## Credits & Acknowledgements
+
+Special thanks to the open-source community and project creators whose work made this platform possible:
+
+- **[chuni-penguin](https://github.com/beer-psi/chuni-penguin)** by [beerpsi](https://github.com/beer-psi) — The original inspiration for this project.
+- **[chunirec](https://developer.chunirec.net/)** — Essential chart constants and rating dataset.
+- **[arcade-songs](https://github.com/zetaraku/arcade-songs)** by [zetaraku](https://github.com/zetaraku) — Data mapping and schema references.
